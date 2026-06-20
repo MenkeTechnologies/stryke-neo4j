@@ -4,8 +4,8 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="color-scheme" content="dark light">
-  <meta name="description" content="stryke-neo4j engineering report — neo4rs over a blocking tokio facade, the Graph pool cache, Bolt row-to-JSON deserialization, and parametrized Cypher.">
-  <title>stryke-neo4j — Engineering report</title>
+  <meta name="description" content="stryke-neo4j — engineering report. Neo4j graph client for stryke over neo4rs (Bolt). cdylib/FFI architecture, capabilities, scope, dependencies.">
+  <title>stryke-neo4j — Engineering Report</title>
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Orbitron:wght@400;600;700;900&amp;family=Share+Tech+Mono&amp;display=swap" rel="stylesheet">
@@ -13,82 +13,158 @@
   <link rel="stylesheet" href="tutorial.css">
   <style>
     .tutorial-main { max-width: 68rem; }
+    .stat-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fill, minmax(11rem, 1fr));
+      gap: 0.5rem;
+      margin: 1rem 0;
+    }
+    .stat-card {
+      border: 1px solid var(--border);
+      border-left: 2px solid var(--cyan);
+      padding: 0.65rem 0.85rem;
+      background: color-mix(in srgb, var(--bg-card) 92%, transparent);
+      border-radius: 2px;
+    }
+    .stat-val {
+      font-family: 'Orbitron', sans-serif;
+      font-size: 20px;
+      font-weight: 700;
+      color: var(--accent);
+    }
+    .stat-val.cyan { color: var(--cyan); }
+    .stat-val.green { color: var(--green); }
+    .stat-label {
+      font-family: 'Share Tech Mono', monospace;
+      font-size: 10px;
+      text-transform: uppercase;
+      letter-spacing: 1.2px;
+      color: var(--text-dim);
+      margin-top: 0.2rem;
+    }
+    .arch-table { width: 100%; border-collapse: collapse; margin: 0.6rem 0; font-size: 12.5px; }
+    .arch-table th {
+      background: var(--bg-secondary);
+      color: var(--cyan);
+      font-family: 'Orbitron', sans-serif;
+      font-size: 10px;
+      font-weight: 700;
+      letter-spacing: 1px;
+      text-transform: uppercase;
+      text-align: left;
+      padding: 6px 10px;
+      border: 1px solid var(--border);
+    }
+    .arch-table td { padding: 6px 10px; border: 1px solid var(--border); color: var(--text-dim); vertical-align: top; }
+    .arch-table td code { color: var(--accent-light); background: var(--bg); padding: 1px 4px; }
+    .section-rule { border: 0; border-top: 1px dashed var(--border); margin: 2rem 0 1.5rem; }
   </style>
 </head>
 <body>
-  <div class="tutorial-wrap">
+  <div class="app tutorial-app" id="reportApp">
+    <div class="crt-scanline" id="crtH" aria-hidden="true"></div>
+    <div class="crt-scanline-v" id="crtV" aria-hidden="true"></div>
+
     <header class="tutorial-header">
       <div class="tutorial-header-inner">
-        <h1 class="tutorial-brand">// STRYKE-NEO4J &mdash; ENGINEERING REPORT</h1>
-        <nav class="tutorial-nav">
-          <a href="index.html">Documentation</a>
-          <a href="https://github.com/MenkeTechnologies/stryke-neo4j" target="_blank" rel="noopener noreferrer">GitHub</a>
-        </nav>
+        <div>
+          <h1 class="tutorial-brand">// STRYKE-NEO4J &mdash; ENGINEERING REPORT</h1>
+          <nav class="tutorial-crumbs" aria-label="Breadcrumb">
+            <span class="current">Engineering Report</span>
+            <span class="sep">/</span>
+            <a href="index.html">Docs</a>
+            <span class="sep">/</span>
+            <a href="https://github.com/MenkeTechnologies/stryke-neo4j" target="_blank" rel="noopener noreferrer">GitHub</a>
+            <span class="sep">/</span>
+            <a href="https://github.com/MenkeTechnologies/strykelang" target="_blank" rel="noopener noreferrer">strykelang</a>
+          </nav>
+          <p style="margin:0.35rem 0 0;font-family:'Share Tech Mono',monospace;font-size:11px;color:var(--text-dim);letter-spacing:0.03em;opacity:0.75;">
+            Opt-in stryke connector package &middot; cdylib <code>libstryke_neo4j</code> (publish=false) &middot; namespace <code>Neo4j</code> &middot; JSON-in/JSON-out FFI over dlopen
+          </p>
+        </div>
+        <div class="tutorial-toolbar">
+          <button type="button" class="btn btn-secondary" id="btnTheme" title="Toggle light/dark">Theme</button>
+          <button type="button" class="btn btn-secondary active" id="btnCrt" title="CRT scanline overlay">CRT</button>
+          <button type="button" class="btn btn-secondary active" id="btnNeon" title="Neon border pulse">Neon</button>
+        </div>
       </div>
     </header>
 
     <main class="tutorial-main">
-      <section>
-        <h2>Driver + blocking facade</h2>
-        <p>
-          The client is <code>neo4rs</code>, the pure-Rust Bolt protocol
-          implementation — no JVM, no official-driver FFI. neo4rs is async, so
-          the cdylib owns one multi-thread tokio runtime and
-          <code>block_on</code>s each call. From stryke's perspective every
-          <code>Neo4j::*</code> function is an ordinary blocking call; the async
-          machinery is entirely internal.
-        </p>
-      </section>
 
-      <section>
-        <h2>Graph pool cache</h2>
-        <p>
-          neo4rs <code>Graph</code> is itself a connection pool. One is cached
-          per <code>(uri, user, database)</code> tuple, so repeated queries reuse
-          pooled Bolt connections. A call that errors evicts its pool from the
-          cache, so the next call reconnects cleanly rather than reusing a
-          poisoned session.
-        </p>
-      </section>
+      <h2 class="tutorial-title"><span class="step-hash">&gt;_</span>EXECUTIVE SUMMARY</h2>
+      <p class="tutorial-subtitle"><strong>stryke-neo4j</strong> is an opt-in connector package in the stryke ecosystem &mdash; a Neo4j graph client exposing parametrized Cypher query and run, scalar/row helpers, and schema introspection as the <code>Neo4j</code> package, built on <a href="https://docs.rs/neo4rs" target="_blank" rel="noopener noreferrer">neo4rs</a>, the pure-Rust Bolt driver.</p>
+      <p class="tutorial-subtitle">neo4rs is async and pulls in tokio plus a TLS stack &mdash; a dependency tree that ships once, on demand, as an opt-in package. stryke core is never linked against it; the cdylib presents a blocking facade so every <code>Neo4j::*</code> call is an ordinary blocking call.</p>
 
-      <section>
-        <h2>Rows to JSON</h2>
-        <p>
-          neo4rs deserializes a Bolt row directly into <code>serde_json::Value</code>,
-          so the conversion is one call per row: scalars become JSON scalars, a
-          returned node or relationship becomes its property map, and lists/maps
-          nest naturally. Arbitrary <code>RETURN</code> shapes round-trip without
-          the caller declaring a schema, and the result is keyed by the return
-          aliases.
-        </p>
-      </section>
+      <div class="stat-grid">
+        <div class="stat-card"><div class="stat-val">Neo4j</div><div class="stat-label">stryke namespace</div></div>
+        <div class="stat-card"><div class="stat-val cyan">opt-in</div><div class="stat-label">Tier</div></div>
+        <div class="stat-card"><div class="stat-val">cdylib</div><div class="stat-label">Load model (dlopen)</div></div>
+        <div class="stat-card"><div class="stat-val green">Bolt</div><div class="stat-label">Transport (neo4rs)</div></div>
+      </div>
 
-      <section>
-        <h2>Parametrized Cypher</h2>
-        <p>
-          Statements use <code>$name</code> placeholders; JSON params (bool /
-          integer / float / string) are bound positionally by name, so values
-          never enter the query text — no string interpolation, no injection
-          surface. <code>run</code> executes a write/DDL statement that returns
-          no rows; <code>query</code> / <code>scalar</code> stream and collect
-          results.
-        </p>
-      </section>
+      <hr class="section-rule">
+      <h2 class="tutorial-title"><span class="step-hash">~</span>ARCHITECTURE</h2>
+      <p class="tutorial-subtitle">A single in-process cdylib. The stryke side is a thin <code>.stk</code> library; the heavy driver code lives in <code>libstryke_neo4j</code> and is dlopened on first <code>use Neo4j</code>. No sidecar process, no fork per call.</p>
+      <table class="arch-table">
+        <thead><tr><th>Layer</th><th>Implementation</th></tr></thead>
+        <tbody>
+          <tr><td>stryke library (<code>lib/Neo4j.stk</code>)</td><td>Thin wrappers exposing typed functions; serialize args to JSON, decode responses, <code>die</code> on an <code>{error}</code> payload</td></tr>
+          <tr><td>cdylib (<code>libstryke_neo4j</code>)</td><td>Rust async (neo4rs/tokio); each <code>neo4j__*</code> export takes a JSON string and returns a JSON string</td></tr>
+          <tr><td>Blocking facade</td><td>One shared tokio runtime; every handler <code>block_on</code>s the async Bolt call, so the FFI surface is synchronous</td></tr>
+          <tr><td>Persistent state</td><td>One <code>Graph</code> connection pool cached per <code>(uri, user, db)</code>; a pool whose call errors is evicted and reopened on the next call</td></tr>
+          <tr><td>FFI safety</td><td>Handler errors and panics are caught and surfaced as <code>{"error": ...}</code>; a panic never crosses the C ABI into the host shell</td></tr>
+          <tr><td>Build</td><td>Cargo <code>crate-type = ["cdylib"]</code>, <code>publish = false</code>; ships via <code>s pkg install -g .</code></td></tr>
+          <tr><td>CI</td><td>GitHub Actions <code>.github/workflows/ci.yml</code> &mdash; check, fmt, clippy <code>-D warnings</code>, test (ubuntu + macos), doc, release-build on three targets</td></tr>
+        </tbody>
+      </table>
 
-      <section>
-        <h2>Dependencies</h2>
-        <p>
-          <code>neo4rs</code> (Bolt driver), <code>tokio</code> (runtime),
-          <code>serde_json</code> for the FFI payloads and row deserialization,
-          <code>once_cell</code> for the runtime + pool cache. Pure-Rust
-          throughout — no JVM, no native client library.
-        </p>
-      </section>
+      <hr class="section-rule">
+      <h2 class="tutorial-title"><span class="step-hash">~</span>CAPABILITIES</h2>
+      <p>The surface is scoped to "useful from a shell pipeline" &mdash; parametrized Cypher plus schema introspection, not full driver coverage.</p>
+      <table class="arch-table">
+        <thead><tr><th>Group</th><th>Functions</th><th>Notes</th></tr></thead>
+        <tbody>
+          <tr><td>Liveness</td><td><code>version</code>, <code>ping</code>, <code>server_info</code></td><td><code>RETURN 1</code> probe; <code>dbms.components()</code></td></tr>
+          <tr><td>Query</td><td><code>query</code>, <code>query_one</code>, <code>scalar</code></td><td>Rows keyed by RETURN aliases</td></tr>
+          <tr><td>Write</td><td><code>run</code></td><td>CREATE / MERGE / SET / DELETE / DDL, no rows</td></tr>
+          <tr><td>Introspection</td><td><code>labels</code>, <code>relationship_types</code>, <code>property_keys</code>, <code>indexes</code>, <code>constraints</code></td><td><code>db.labels()</code>, <code>SHOW INDEXES</code>, …</td></tr>
+          <tr><td>URL helpers</td><td><code>parse_url</code>, <code>redact_url</code></td><td>Pure; Bolt-URI parse / password redaction</td></tr>
+        </tbody>
+      </table>
+
+      <hr class="section-rule">
+      <h2 class="tutorial-title"><span class="step-hash">$</span>WHY OPT-IN (NOT BUILTIN)</h2>
+      <p>neo4rs pulls in tokio and a TLS stack. The core <code>stryke</code> binary stays slim precisely because each connector ships separately. Daily-driver work &mdash; one-liners, awk replacement, data scripting &mdash; doesn't need a Bolt driver or a graph client linked in.</p>
+
+      <hr class="section-rule">
+      <h2 class="tutorial-title"><span class="step-hash">&amp;</span>FFI PROTOCOL</h2>
+      <p>JSON in, JSON out, over a C ABI. Each request is a JSON object of op-specific args; <code>$name</code> Cypher params are bound positionally, never interpolated into the query text. Each response is a JSON object; errors carry an <code>error</code> field. The C string returned by every export is freed through the shared <code>stryke_free_cstring</code> symbol.</p>
+<pre>neo4j__query('{"cypher":"MATCH (p:Person) WHERE p.id = $id RETURN p.name AS name",
+              "params":{"id":1},"uri":"neo4j://localhost:7687","user":"neo4j"}')
+  -> {"rows":[{"name":"Ada"}]}
+
+# handler errors are surfaced, never thrown across the ABI
+neo4j__query('{}')  ->  {"error":"missing cypher"}</pre>
+
+      <hr class="section-rule">
+      <h2 class="tutorial-title"><span class="step-hash">/</span>SCOPE</h2>
+      <p>See the README's <a href="https://github.com/MenkeTechnologies/stryke-neo4j#readme" target="_blank" rel="noopener noreferrer">API reference and usage sections</a> for the authoritative scope. The package is intentionally narrower than the underlying driver &mdash; the goal is "useful from a shell pipeline", not "complete API coverage". Live, credential-backed round-trips are exercised against a real Neo4j via the gated <code>t/</code> tests.</p>
+
+      <hr class="section-rule">
+      <h2 class="tutorial-title"><span class="step-hash">#</span>PROJECT METADATA</h2>
+      <table class="arch-table">
+        <thead><tr><th>Item</th><th>Value</th></tr></thead>
+        <tbody>
+          <tr><td>License</td><td>MIT</td></tr>
+          <tr><td>Repository</td><td><a href="https://github.com/MenkeTechnologies/stryke-neo4j" target="_blank" rel="noopener noreferrer">github.com/MenkeTechnologies/stryke-neo4j</a></td></tr>
+          <tr><td>Parent language</td><td><a href="https://github.com/MenkeTechnologies/strykelang" target="_blank" rel="noopener noreferrer">strykelang</a></td></tr>
+          <tr><td>Meta umbrella</td><td><a href="https://github.com/MenkeTechnologies/MenkeTechnologiesMeta" target="_blank" rel="noopener noreferrer">MenkeTechnologiesMeta</a></td></tr>
+          <tr><td>Issues</td><td><a href="https://github.com/MenkeTechnologies/stryke-neo4j/issues" target="_blank" rel="noopener noreferrer">github.com/MenkeTechnologies/stryke-neo4j/issues</a></td></tr>
+        </tbody>
+      </table>
+
     </main>
-
-    <footer class="tutorial-footer">
-      <p>MIT &middot; MenkeTechnologies</p>
-    </footer>
   </div>
   <script src="hud-theme.js"></script>
 </body>
