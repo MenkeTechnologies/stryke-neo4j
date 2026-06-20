@@ -1,0 +1,39 @@
+## t/test_stryke_neo4j_surface.stk — wrapper-completeness + pure-helper pin.
+##
+## Asserts every public `fn Neo4j::name` resolves via `use`, then exercises the
+## connection-free Bolt-URI helpers. Permission-free — no Neo4j server, so CI
+## without a database validates the surface and the parse/redact logic.
+
+use Neo4j
+
+# ── wrapper surface ────────────────────────────────────────
+assert_ok exists &Neo4j::version, "Neo4j::version exists"
+assert_ok exists &Neo4j::ping, "Neo4j::ping exists"
+assert_ok exists &Neo4j::server_info, "Neo4j::server_info exists"
+assert_ok exists &Neo4j::query, "Neo4j::query exists"
+assert_ok exists &Neo4j::query_one, "Neo4j::query_one exists"
+assert_ok exists &Neo4j::scalar, "Neo4j::scalar exists"
+assert_ok exists &Neo4j::run, "Neo4j::run exists"
+assert_ok exists &Neo4j::labels, "Neo4j::labels exists"
+assert_ok exists &Neo4j::relationship_types, "Neo4j::relationship_types exists"
+assert_ok exists &Neo4j::property_keys, "Neo4j::property_keys exists"
+assert_ok exists &Neo4j::indexes, "Neo4j::indexes exists"
+assert_ok exists &Neo4j::constraints, "Neo4j::constraints exists"
+assert_ok exists &Neo4j::parse_url, "Neo4j::parse_url exists"
+assert_ok exists &Neo4j::redact_url, "Neo4j::redact_url exists"
+
+# ── version (cdylib loaded) ────────────────────────────────
+assert_ok Neo4j::version(), "Neo4j::version returns truthy (cdylib loaded)"
+
+# ── pure Bolt-URI helpers (no database) ────────────────────
+val $p = Neo4j::parse_url("neo4j+s://alice:secret\@graph.example.com:7687")
+assert_eq $p->{host}, "graph.example.com", "parse_url host"
+assert_eq $p->{port}, 7687, "parse_url port"
+assert_eq $p->{username}, "alice", "parse_url username"
+assert_eq $p->{password}, "***", "parse_url redacts password"
+assert_eq $p->{tls}, \1, "parse_url +s implies tls"
+
+assert_eq Neo4j::redact_url("neo4j://alice:secret\@host:7687"),
+    "neo4j://alice:***\@host:7687", "redact_url hides password"
+
+test_run

@@ -1,0 +1,53 @@
+## t/test_neo4j.stk — assertion tests for the stryke `Neo4j` package.
+##
+## Connection-free asserts always run. The graph asserts need a live Neo4j via
+## $NEO4J_URL (+ $NEO4J_USER / $NEO4J_PASS); they short-circuit when none is set
+## so CI without a database stays green. A throwaway local instance works (e.g.
+## the neo4j Docker image).
+
+use Neo4j
+
+# ── permission-free: cdylib reachable ───────────────────────────────
+assert_ok Neo4j::version(), "Neo4j::version returns truthy (cdylib loaded)"
+assert_eq Neo4j::redact_url("bolt://u:p\@h:7687"), "bolt://u:***\@h:7687", "redact pure helper"
+
+# ── live Neo4j (opt-in) ─────────────────────────────────────────────
+var %conn
+if (defined $ENV{NEO4J_URL}) {
+    $conn{uri}      = $ENV{NEO4J_URL}
+    $conn{user}     = $ENV{NEO4J_USER} // "neo4j"
+    $conn{password} = $ENV{NEO4J_PASS} if defined $ENV{NEO4J_PASS}
+
+    val $up = eval { Neo4j::ping(%conn) }
+    if ($up) {
+        val $tag = "stryke_test_$$"
+
+        # 1. scalar
+        assert_eq Neo4j::scalar("RETURN 1 + 1 AS n", %conn), 2, "scalar arithmetic"
+
+        # 2. write with params
+        Neo4j::run(
+            "CREATE (p:$tag {id: \$id, name: \$name})",
+            params => { id => 1, name => "Ada" },
+            %conn,
+        )
+
+        # 3. query back (row keyed by RETURN alias)
+        val @rows = Neo4j::query("MATCH (p:$tag) WHERE p.id = \$id RETURN p.name AS name", params => { id => 1 }, %conn)
+        assert_eq scalar(@rows), 1, "query returns one row"
+        assert_eq $rows[0]{name}, "Ada", "node property round-trips"
+
+        # 4. count via scalar
+        Neo4j::run("CREATE (p:$tag {id: 2, name: 'Alan'})", %conn)
+        assert_eq Neo4j::scalar("MATCH (p:$tag) RETURN count(p) AS n", %conn), 2, "count is 2"
+
+        # 5. label shows up in introspection
+        val @labels = Neo4j::labels(%conn)
+        assert_ok scalar(@labels) > 0, "labels() returns rows"
+
+        # cleanup
+        Neo4j::run("MATCH (p:$tag) DELETE p", %conn)
+    }
+}
+
+test_run

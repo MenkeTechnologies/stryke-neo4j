@@ -1,0 +1,128 @@
+## lib/Neo4j.stk — Neo4j graph client for stryke (`use Neo4j`).
+##
+## Thin wrapper around the `stryke-neo4j` cdylib's `neo4j__*` exports. The
+## cdylib is dlopened in-process on first `use Neo4j` and registers each export
+## via `rust_ffi::load_cdylib`. Every wrapper builds a JSON args dict, calls the
+## FFI symbol, and parses the JSON return.
+##
+## Transport is `neo4rs` (pure-Rust Bolt) behind a blocking facade — the cdylib
+## owns one tokio runtime and caches a `Graph` pool per `(uri, user, db)`.
+## Parametrized Cypher uses `$name` placeholders bound from `params`.
+
+package Neo4j
+
+# ── error dispatch ────────────────────────────────────────────────────
+
+## Decode the JSON from a `neo4j__*` FFI call; die on a reported error.
+fn Neo4j::_decode ($name, $json) {
+    val $o = from_json $json
+    if (ref $o eq "HASH" && exists $o->{error}) {
+        die "Neo4j::$name: $o->{error}"
+    }
+    $o
+}
+
+## Build the request hash: connection params from %opts plus per-op fields.
+## Falls back to $NEO4J_URL (Bolt URI) when no uri given.
+fn Neo4j::_req ($extra, $opts) {
+    var %r = %$extra
+    for val $k (qw(uri user password database)) {
+        $r{$k} = $opts->{$k} if exists $opts->{$k} && defined $opts->{$k}
+    }
+    if (!exists $r{uri} && defined $ENV{NEO4J_URL}) {
+        $r{uri} = $ENV{NEO4J_URL}
+    }
+    \%r
+}
+
+# ── version + liveness ────────────────────────────────────────────────
+
+## Package version string.
+fn Neo4j::version {
+    Neo4j::_decode("version", neo4j__version("{}"))->{version}
+}
+
+## Connectivity probe — `RETURN 1`. Returns 1 on success.
+fn Neo4j::ping (%opts) {
+    val $r = Neo4j::_req({}, \%opts)
+    Neo4j::_decode("ping", neo4j__ping(to_json($r)))->{value}
+}
+
+## Server components (`CALL dbms.components()`) — name/versions/edition rows.
+fn Neo4j::server_info (%opts) {
+    val $r = Neo4j::_req({}, \%opts)
+    @{ Neo4j::_decode("server_info", neo4j__server_info(to_json($r)))->{rows} }
+}
+
+# ── query / run ───────────────────────────────────────────────────────
+
+## Run a Cypher query and return rows. $cypher uses `$name` placeholders;
+## %opts{params} is a hashref of named bind values. Each row is a hashref
+## keyed by the RETURN aliases (nodes/relationships become their properties).
+fn Neo4j::query ($cypher, %opts) {
+    val $r = Neo4j::_req({ cypher => $cypher, params => $opts{params} }, \%opts)
+    @{ Neo4j::_decode("query", neo4j__query(to_json($r)))->{rows} }
+}
+
+## Return the first row hashref (or undef).
+fn Neo4j::query_one ($cypher, %opts) {
+    val $r = Neo4j::_req({ cypher => $cypher, params => $opts{params} }, \%opts)
+    Neo4j::_decode("query_one", neo4j__query_one(to_json($r)))->{row}
+}
+
+## Return the first value of the first row (a scalar), or undef.
+fn Neo4j::scalar ($cypher, %opts) {
+    val $r = Neo4j::_req({ cypher => $cypher, params => $opts{params} }, \%opts)
+    Neo4j::_decode("scalar", neo4j__scalar(to_json($r)))->{value}
+}
+
+## Run a write/DDL statement that returns no rows (CREATE / MERGE / SET /
+## DELETE / CREATE INDEX …). Returns 1 on success.
+fn Neo4j::run ($cypher, %opts) {
+    val $r = Neo4j::_req({ cypher => $cypher, params => $opts{params} }, \%opts)
+    Neo4j::_decode("run", neo4j__run(to_json($r)))->{ok}
+}
+
+# ── schema introspection ──────────────────────────────────────────────
+
+## Node labels (`CALL db.labels()`).
+fn Neo4j::labels (%opts) {
+    val $r = Neo4j::_req({}, \%opts)
+    @{ Neo4j::_decode("labels", neo4j__labels(to_json($r)))->{rows} }
+}
+
+## Relationship types (`CALL db.relationshipTypes()`).
+fn Neo4j::relationship_types (%opts) {
+    val $r = Neo4j::_req({}, \%opts)
+    @{ Neo4j::_decode("relationship_types", neo4j__relationship_types(to_json($r)))->{rows} }
+}
+
+## Property keys (`CALL db.propertyKeys()`).
+fn Neo4j::property_keys (%opts) {
+    val $r = Neo4j::_req({}, \%opts)
+    @{ Neo4j::_decode("property_keys", neo4j__property_keys(to_json($r)))->{rows} }
+}
+
+## Indexes (`SHOW INDEXES`).
+fn Neo4j::indexes (%opts) {
+    val $r = Neo4j::_req({}, \%opts)
+    @{ Neo4j::_decode("indexes", neo4j__indexes(to_json($r)))->{rows} }
+}
+
+## Constraints (`SHOW CONSTRAINTS`).
+fn Neo4j::constraints (%opts) {
+    val $r = Neo4j::_req({}, \%opts)
+    @{ Neo4j::_decode("constraints", neo4j__constraints(to_json($r)))->{rows} }
+}
+
+# ── pure URL helpers ──────────────────────────────────────────────────
+
+## Parse a Bolt URI into a hashref (password redacted).
+fn Neo4j::parse_url ($url) {
+    Neo4j::_decode("parse_url", neo4j__parse_url(to_json({ url => $url })))
+}
+
+## Redact the password in a Bolt URI.
+fn Neo4j::redact_url ($url) {
+    Neo4j::_decode("redact_url", neo4j__redact_url(to_json({ url => $url })))->{value}
+}

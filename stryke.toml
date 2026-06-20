@@ -1,0 +1,35 @@
+[package]
+name = "stryke-neo4j"
+version = "0.1.0"
+description = "Neo4j graph client for stryke. cdylib loaded in-process — Cypher query/run with parameters + schema introspection over the Bolt protocol (neo4rs), blocking facade over an embedded tokio runtime, pool cached per (uri, user, db)."
+authors = ["MenkeTechnologies"]
+license = "MIT"
+repository = "https://github.com/MenkeTechnologies/stryke-neo4j"
+edition = "2026"
+
+[ffi]
+lib-name = "stryke_neo4j"
+namespace = "Neo4j"
+exports = [
+    "neo4j__version",
+    "neo4j__ping",
+    "neo4j__server_info",
+    "neo4j__query",
+    "neo4j__query_one",
+    "neo4j__scalar",
+    "neo4j__run",
+    "neo4j__labels",
+    "neo4j__relationship_types",
+    "neo4j__property_keys",
+    "neo4j__indexes",
+    "neo4j__constraints",
+    "neo4j__parse_url",
+    "neo4j__redact_url",
+]
+
+[scripts]
+build = "cargo build --release"
+build-debug = "cargo build"
+clean = "cargo clean"
+test = "s test t/"
+install = "s pkg install -g ."

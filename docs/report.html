@@ -1,0 +1,95 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="dark light">
+  <meta name="description" content="stryke-neo4j engineering report — neo4rs over a blocking tokio facade, the Graph pool cache, Bolt row-to-JSON deserialization, and parametrized Cypher.">
+  <title>stryke-neo4j — Engineering report</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Orbitron:wght@400;600;700;900&amp;family=Share+Tech+Mono&amp;display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="hud-static.css">
+  <link rel="stylesheet" href="tutorial.css">
+  <style>
+    .tutorial-main { max-width: 68rem; }
+  </style>
+</head>
+<body>
+  <div class="tutorial-wrap">
+    <header class="tutorial-header">
+      <div class="tutorial-header-inner">
+        <h1 class="tutorial-brand">// STRYKE-NEO4J &mdash; ENGINEERING REPORT</h1>
+        <nav class="tutorial-nav">
+          <a href="index.html">Documentation</a>
+          <a href="https://github.com/MenkeTechnologies/stryke-neo4j" target="_blank" rel="noopener noreferrer">GitHub</a>
+        </nav>
+      </div>
+    </header>
+
+    <main class="tutorial-main">
+      <section>
+        <h2>Driver + blocking facade</h2>
+        <p>
+          The client is <code>neo4rs</code>, the pure-Rust Bolt protocol
+          implementation — no JVM, no official-driver FFI. neo4rs is async, so
+          the cdylib owns one multi-thread tokio runtime and
+          <code>block_on</code>s each call. From stryke's perspective every
+          <code>Neo4j::*</code> function is an ordinary blocking call; the async
+          machinery is entirely internal.
+        </p>
+      </section>
+
+      <section>
+        <h2>Graph pool cache</h2>
+        <p>
+          neo4rs <code>Graph</code> is itself a connection pool. One is cached
+          per <code>(uri, user, database)</code> tuple, so repeated queries reuse
+          pooled Bolt connections. A call that errors evicts its pool from the
+          cache, so the next call reconnects cleanly rather than reusing a
+          poisoned session.
+        </p>
+      </section>
+
+      <section>
+        <h2>Rows to JSON</h2>
+        <p>
+          neo4rs deserializes a Bolt row directly into <code>serde_json::Value</code>,
+          so the conversion is one call per row: scalars become JSON scalars, a
+          returned node or relationship becomes its property map, and lists/maps
+          nest naturally. Arbitrary <code>RETURN</code> shapes round-trip without
+          the caller declaring a schema, and the result is keyed by the return
+          aliases.
+        </p>
+      </section>
+
+      <section>
+        <h2>Parametrized Cypher</h2>
+        <p>
+          Statements use <code>$name</code> placeholders; JSON params (bool /
+          integer / float / string) are bound positionally by name, so values
+          never enter the query text — no string interpolation, no injection
+          surface. <code>run</code> executes a write/DDL statement that returns
+          no rows; <code>query</code> / <code>scalar</code> stream and collect
+          results.
+        </p>
+      </section>
+
+      <section>
+        <h2>Dependencies</h2>
+        <p>
+          <code>neo4rs</code> (Bolt driver), <code>tokio</code> (runtime),
+          <code>serde_json</code> for the FFI payloads and row deserialization,
+          <code>once_cell</code> for the runtime + pool cache. Pure-Rust
+          throughout — no JVM, no native client library.
+        </p>
+      </section>
+    </main>
+
+    <footer class="tutorial-footer">
+      <p>MIT &middot; MenkeTechnologies</p>
+    </footer>
+  </div>
+  <script src="hud-theme.js"></script>
+</body>
+</html>

@@ -1,0 +1,106 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="dark light">
+  <meta name="description" content="stryke-neo4j — Neo4j graph client for stryke. Parametrized Cypher query/run, scalar/row helpers, schema introspection over the Bolt protocol (neo4rs). Opt-in Rust cdylib.">
+  <title>stryke-neo4j — Documentation</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Orbitron:wght@400;600;700;900&amp;family=Share+Tech+Mono&amp;display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="hud-static.css">
+  <link rel="stylesheet" href="tutorial.css">
+  <style>
+    .tutorial-main { max-width: 68rem; }
+    .example-tbl { width: 100%; border-collapse: collapse; margin: 0.6rem 0; font-size: 12.5px; }
+    .example-tbl td { padding: 6px 10px; border-bottom: 1px solid var(--border); vertical-align: top; }
+    .example-tbl td:first-child { white-space: nowrap; color: var(--accent); font-family: 'Share Tech Mono', ui-monospace, monospace; }
+  </style>
+</head>
+<body>
+  <div class="tutorial-wrap">
+    <header class="tutorial-header">
+      <div class="tutorial-header-inner">
+        <h1 class="tutorial-brand">// STRYKE-NEO4J &mdash; NEO4J GRAPH CLIENT FOR STRYKE</h1>
+        <nav class="tutorial-nav">
+          <a href="report.html">Engineering report</a>
+          <a href="https://github.com/MenkeTechnologies/stryke-neo4j" target="_blank" rel="noopener noreferrer">GitHub</a>
+          <a href="https://github.com/MenkeTechnologies/strykelang" target="_blank" rel="noopener noreferrer">strykelang</a>
+          <a href="https://github.com/MenkeTechnologies/MenkeTechnologiesMeta" target="_blank" rel="noopener noreferrer">Meta</a>
+        </nav>
+      </div>
+    </header>
+
+    <main class="tutorial-main">
+      <section>
+        <h2>What it is</h2>
+        <p>
+          <code>stryke-neo4j</code> is a Neo4j graph database client for
+          <a href="https://github.com/MenkeTechnologies/strykelang" target="_blank" rel="noopener noreferrer">stryke</a>:
+          parametrized Cypher query and run, scalar/row helpers, and schema
+          introspection over the Bolt protocol — via
+          <a href="https://docs.rs/neo4rs" target="_blank" rel="noopener noreferrer">neo4rs</a>,
+          the pure-Rust driver. No JVM. The cdylib owns one tokio runtime and
+          presents a blocking facade, caching a connection pool per
+          <code>(uri, user, db)</code>.
+        </p>
+      </section>
+
+      <section>
+        <h2>Quick start</h2>
+        <pre><code>use Neo4j
+
+var %conn = ( uri =&gt; "neo4j://localhost:7687", user =&gt; "neo4j", password =&gt; $ENV{NEO4J_PASS} )
+
+Neo4j::run("CREATE (p:Person {id: $id, name: $name})", params =&gt; { id =&gt; 1, name =&gt; "Ada" }, %conn)
+
+val @people = Neo4j::query("MATCH (p:Person) WHERE p.id = $id RETURN p.name AS name",
+                           params =&gt; { id =&gt; 1 }, %conn)
+p $people[0]{name}        # Ada
+
+p Neo4j::scalar("MATCH (p:Person) RETURN count(p) AS n", %conn)</code></pre>
+      </section>
+
+      <section>
+        <h2>Rows as JSON</h2>
+        <p>
+          neo4rs deserializes each Bolt row straight into JSON, so a returned
+          node or relationship becomes its property map and arbitrary results
+          round-trip without a per-query schema. Parametrized Cypher binds
+          <code>$name</code> placeholders from <code>params</code>, so values
+          never enter the query text.
+        </p>
+      </section>
+
+      <section>
+        <h2>API surface</h2>
+        <table class="example-tbl">
+          <tr><td>Liveness</td><td>version, ping, server_info</td></tr>
+          <tr><td>Query</td><td>query, query_one, scalar</td></tr>
+          <tr><td>Write</td><td>run</td></tr>
+          <tr><td>Introspection</td><td>labels, relationship_types, property_keys, indexes, constraints</td></tr>
+          <tr><td>URL helpers</td><td>parse_url, redact_url</td></tr>
+        </table>
+        <p>The full API lives in the <a href="https://github.com/MenkeTechnologies/stryke-neo4j#readme">README</a>.</p>
+      </section>
+
+      <section>
+        <h2>Package family</h2>
+        <p>Part of the stryke connector family under the <a href="https://github.com/MenkeTechnologies/MenkeTechnologiesMeta" target="_blank" rel="noopener noreferrer">MenkeTechnologiesMeta</a> umbrella:</p>
+        <ul>
+          <li><a href="https://github.com/MenkeTechnologies/stryke-postgres" target="_blank" rel="noopener noreferrer">stryke-postgres</a> — PostgreSQL</li>
+          <li><a href="https://github.com/MenkeTechnologies/stryke-mssql" target="_blank" rel="noopener noreferrer">stryke-mssql</a> — SQL Server</li>
+          <li><a href="https://github.com/MenkeTechnologies/stryke-scylla" target="_blank" rel="noopener noreferrer">stryke-scylla</a> — ScyllaDB / Cassandra</li>
+          <li><a href="https://github.com/MenkeTechnologies/stryke-mongo" target="_blank" rel="noopener noreferrer">stryke-mongo</a> — MongoDB</li>
+        </ul>
+      </section>
+    </main>
+
+    <footer class="tutorial-footer">
+      <p>MIT &middot; MenkeTechnologies</p>
+    </footer>
+  </div>
+  <script src="hud-theme.js"></script>
+</body>
+</html>
