@@ -115,10 +115,18 @@ whose call errors is evicted and reopened on the next call.
 | Group         | Functions                                                              |
 | ------------- | ---------------------------------------------------------------------- |
 | Liveness      | `version`, `ping`, `server_info`                                       |
-| Query         | `query`, `query_one`, `scalar`                                         |
-| Write         | `run`                                                                  |
+| Query         | `query`, `query_one`, `scalar`, `query_values`                         |
+| Write         | `run`, `batch` (transaction)                                           |
+| Graph helpers | `create_node`, `merge_node`, `create_rel`, `delete_nodes`, `node_count` |
+| Schema        | `create_index`, `create_constraint`, `drop_index`, `drop_constraint`   |
 | Introspection | `labels`, `relationship_types`, `property_keys`, `indexes`, `constraints` |
+| Planning      | `explain`, `profile`                                                   |
 | URL helpers   | `parse_url`, `redact_url`                                              |
+
+The graph/schema convenience helpers take scalar properties and safely
+backtick-quote labels, relationship types, and property names (which Cypher
+can't parametrize); use `run` with hand-written Cypher for list/map properties
+or anything more elaborate.
 
 ---
 

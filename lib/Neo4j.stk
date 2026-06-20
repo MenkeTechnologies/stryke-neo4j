@@ -115,6 +115,104 @@ fn Neo4j::constraints (%opts) {
     @{ Neo4j::_decode("constraints", neo4j__constraints(to_json($r)))->{rows} }
 }
 
+# ── transactions ──────────────────────────────────────────────────────
+
+## Run a list of steps in one transaction (commit on success, rollback if any
+## step fails). $steps: arrayref of { cypher, params => {...} }. Returns the
+## number of committed steps.
+fn Neo4j::batch ($steps, %opts) {
+    val $list = ref($steps) eq "ARRAY" ? $steps : [$steps]
+    val $r = Neo4j::_req({ steps => $list }, \%opts)
+    Neo4j::_decode("batch", neo4j__batch(to_json($r)))->{steps}
+}
+
+## Like query, but return a flat list of the first column's values.
+fn Neo4j::query_values ($cypher, %opts) {
+    val $r = Neo4j::_req({ cypher => $cypher, params => $opts{params} }, \%opts)
+    @{ Neo4j::_decode("query_values", neo4j__query_values(to_json($r)))->{values} }
+}
+
+# ── node / relationship convenience (scalar properties) ───────────────
+
+## CREATE a $label node with a hashref of scalar $props. Returns the node.
+fn Neo4j::create_node ($label, $props, %opts) {
+    val $r = Neo4j::_req({ label => $label, props => $props }, \%opts)
+    Neo4j::_decode("create_node", neo4j__create_node(to_json($r)))->{node}
+}
+
+## MERGE a $label node on $key = $value, then SET it from %opts{props}.
+fn Neo4j::merge_node ($label, $key, $value, %opts) {
+    val $r = Neo4j::_req({ label => $label, key => $key, value => $value, props => $opts{props} }, \%opts)
+    Neo4j::_decode("merge_node", neo4j__merge_node(to_json($r)))->{node}
+}
+
+## Create a typed relationship between two matched nodes. Returns the rel.
+## %opts: from_label, from_key, from_value, to_label, to_key, to_value, type,
+## props => {...}.
+fn Neo4j::create_rel (%opts) {
+    val $r = Neo4j::_req(
+        {
+            from_label => $opts{from_label}, from_key => $opts{from_key}, from_value => $opts{from_value},
+            to_label   => $opts{to_label},   to_key   => $opts{to_key},   to_value   => $opts{to_value},
+            type       => $opts{type},       props    => $opts{props},
+        },
+        \%opts,
+    )
+    Neo4j::_decode("create_rel", neo4j__create_rel(to_json($r)))->{relationship}
+}
+
+## DETACH DELETE nodes of $label, optionally narrowed by %opts{match} props.
+fn Neo4j::delete_nodes ($label, %opts) {
+    val $r = Neo4j::_req({ label => $label, match => $opts{match} }, \%opts)
+    Neo4j::_decode("delete_nodes", neo4j__delete_nodes(to_json($r)))->{ok}
+}
+
+## Count nodes, optionally of a single %opts{label}.
+fn Neo4j::node_count (%opts) {
+    val $r = Neo4j::_req({ label => $opts{label} }, \%opts)
+    Neo4j::_decode("node_count", neo4j__node_count(to_json($r)))->{value}
+}
+
+# ── index / constraint management ─────────────────────────────────────
+
+## CREATE INDEX on ($label).$property. %opts{name} optional.
+fn Neo4j::create_index ($label, $property, %opts) {
+    val $r = Neo4j::_req({ label => $label, property => $property, name => $opts{name} }, \%opts)
+    Neo4j::_decode("create_index", neo4j__create_index(to_json($r)))->{ok}
+}
+
+## CREATE a uniqueness CONSTRAINT on ($label).$property. %opts{name} optional.
+fn Neo4j::create_constraint ($label, $property, %opts) {
+    val $r = Neo4j::_req({ label => $label, property => $property, name => $opts{name} }, \%opts)
+    Neo4j::_decode("create_constraint", neo4j__create_constraint(to_json($r)))->{ok}
+}
+
+## DROP INDEX by $name.
+fn Neo4j::drop_index ($name, %opts) {
+    val $r = Neo4j::_req({ name => $name }, \%opts)
+    Neo4j::_decode("drop_index", neo4j__drop_index(to_json($r)))->{ok}
+}
+
+## DROP CONSTRAINT by $name.
+fn Neo4j::drop_constraint ($name, %opts) {
+    val $r = Neo4j::_req({ name => $name }, \%opts)
+    Neo4j::_decode("drop_constraint", neo4j__drop_constraint(to_json($r)))->{ok}
+}
+
+# ── query planning ────────────────────────────────────────────────────
+
+## EXPLAIN a query — return the plan rows without running it.
+fn Neo4j::explain ($cypher, %opts) {
+    val $r = Neo4j::_req({ cypher => $cypher, params => $opts{params} }, \%opts)
+    @{ Neo4j::_decode("explain", neo4j__explain(to_json($r)))->{rows} }
+}
+
+## PROFILE a query — run it and return the plan with runtime stats.
+fn Neo4j::profile ($cypher, %opts) {
+    val $r = Neo4j::_req({ cypher => $cypher, params => $opts{params} }, \%opts)
+    @{ Neo4j::_decode("profile", neo4j__profile(to_json($r)))->{rows} }
+}
+
 # ── pure URL helpers ──────────────────────────────────────────────────
 
 ## Parse a Bolt URI into a hashref (password redacted).

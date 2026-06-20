@@ -13,10 +13,10 @@ use std::ffi::{CStr, CString};
 use std::os::raw::c_char;
 use std::panic::AssertUnwindSafe;
 
-use anyhow::{anyhow, Result};
+use anyhow::{anyhow, bail, Result};
 use neo4rs::{query, ConfigBuilder, Graph, Query};
 use once_cell::sync::OnceCell;
-use serde_json::{json, Value};
+use serde_json::{json, Map, Value};
 use tokio::runtime::Runtime;
 
 // ── runtime + graph cache ───────────────────────────────────────────────────
@@ -338,6 +338,341 @@ pub extern "C" fn neo4j__constraints(args: *const c_char) -> *const c_char {
     ffi_call(args, |v| introspect(&v, "SHOW CONSTRAINTS"))
 }
 
+// ── transactions ────────────────────────────────────────────────────────────
+
+/// Run a list of `{ cypher, params? }` steps inside one transaction. Commits on
+/// success, rolls back if any step errors. Returns `{ ok, steps }`.
+#[no_mangle]
+pub extern "C" fn neo4j__batch(args: *const c_char) -> *const c_char {
+    ffi_call(args, |v| {
+        let steps: Vec<(String, Value)> = v
+            .get("steps")
+            .and_then(|s| s.as_array())
+            .ok_or_else(|| anyhow!("missing steps array"))?
+            .iter()
+            .map(|s| {
+                let c = s
+                    .get("cypher")
+                    .and_then(|x| x.as_str())
+                    .unwrap_or("")
+                    .to_string();
+                let p = s.get("params").cloned().unwrap_or(Value::Null);
+                (c, p)
+            })
+            .collect();
+        let n = with_graph(&v, |g| async move {
+            let mut txn = g.start_txn().await.map_err(|e| anyhow!("begin txn: {e}"))?;
+            for (cypher, params) in &steps {
+                if let Err(e) = txn.run(build_query(cypher, params)).await {
+                    let _ = txn.rollback().await;
+                    return Err(anyhow!("step failed (rolled back): {e}"));
+                }
+            }
+            txn.commit().await.map_err(|e| anyhow!("commit: {e}"))?;
+            Ok(steps.len())
+        })?;
+        Ok(json!({ "ok": true, "steps": n }))
+    })
+}
+
+/// Like `query`, but return a flat list of the first column's values across all
+/// rows (handy for collecting ids / names).
+#[no_mangle]
+pub extern "C" fn neo4j__query_values(args: *const c_char) -> *const c_char {
+    ffi_call(args, |v| {
+        let cypher = v["cypher"]
+            .as_str()
+            .ok_or_else(|| anyhow!("missing cypher"))?
+            .to_string();
+        let params = params_of(&v);
+        let rows = with_graph(&v, |g| async move { run_query(&g, &cypher, &params).await })?;
+        let values: Vec<Value> = rows
+            .into_iter()
+            .map(|r| {
+                r.as_object()
+                    .and_then(|o| o.values().next().cloned())
+                    .unwrap_or(Value::Null)
+            })
+            .collect();
+        Ok(json!({ "values": values }))
+    })
+}
+
+// ── node / relationship convenience (scalar properties) ─────────────────────
+
+/// CREATE a node with a label and a scalar-property map. Returns the node.
+#[no_mangle]
+pub extern "C" fn neo4j__create_node(args: *const c_char) -> *const c_char {
+    ffi_call(args, |v| {
+        let label = quote_ident(
+            v["label"]
+                .as_str()
+                .ok_or_else(|| anyhow!("missing label"))?,
+        );
+        let (clause, params) = flatten_props(v.get("props").unwrap_or(&Value::Null), "np")?;
+        let cypher = format!("CREATE (n:{label} {clause}) RETURN n");
+        let rows = with_graph(&v, |g| async move {
+            run_query(&g, &cypher, &Value::Object(params)).await
+        })?;
+        Ok(json!({ "node": rows.into_iter().next() }))
+    })
+}
+
+/// MERGE a node on a single scalar `key` = `value`, then `SET n += props`.
+/// Returns the node.
+#[no_mangle]
+pub extern "C" fn neo4j__merge_node(args: *const c_char) -> *const c_char {
+    ffi_call(args, |v| {
+        let label = quote_ident(
+            v["label"]
+                .as_str()
+                .ok_or_else(|| anyhow!("missing label"))?,
+        );
+        let key = quote_ident(v["key"].as_str().ok_or_else(|| anyhow!("missing key"))?);
+        let value = v
+            .get("value")
+            .cloned()
+            .ok_or_else(|| anyhow!("missing value"))?;
+        scalar_or_err(&value, "value")?;
+        let mut params = Map::new();
+        params.insert("k".into(), value);
+        let mut cypher = format!("MERGE (n:{label} {{{key}: $k}})");
+        if let Some(props) = v.get("props").filter(|p| !p.is_null()) {
+            let (clause, p) = flatten_props(props, "np")?;
+            params.extend(p);
+            cypher.push_str(&format!(" SET n += {clause}"));
+        }
+        cypher.push_str(" RETURN n");
+        let rows = with_graph(&v, |g| async move {
+            run_query(&g, &cypher, &Value::Object(params)).await
+        })?;
+        Ok(json!({ "node": rows.into_iter().next() }))
+    })
+}
+
+/// MATCH two nodes by `(label, key, value)` each and CREATE a typed relationship
+/// between them with optional scalar properties. Returns the relationship.
+#[no_mangle]
+pub extern "C" fn neo4j__create_rel(args: *const c_char) -> *const c_char {
+    ffi_call(args, |v| {
+        let from_label = quote_ident(
+            v["from_label"]
+                .as_str()
+                .ok_or_else(|| anyhow!("missing from_label"))?,
+        );
+        let from_key = quote_ident(
+            v["from_key"]
+                .as_str()
+                .ok_or_else(|| anyhow!("missing from_key"))?,
+        );
+        let to_label = quote_ident(
+            v["to_label"]
+                .as_str()
+                .ok_or_else(|| anyhow!("missing to_label"))?,
+        );
+        let to_key = quote_ident(
+            v["to_key"]
+                .as_str()
+                .ok_or_else(|| anyhow!("missing to_key"))?,
+        );
+        let rel_type = quote_ident(v["type"].as_str().ok_or_else(|| anyhow!("missing type"))?);
+        let from_val = v
+            .get("from_value")
+            .cloned()
+            .ok_or_else(|| anyhow!("missing from_value"))?;
+        let to_val = v
+            .get("to_value")
+            .cloned()
+            .ok_or_else(|| anyhow!("missing to_value"))?;
+        scalar_or_err(&from_val, "from_value")?;
+        scalar_or_err(&to_val, "to_value")?;
+        let mut params = Map::new();
+        params.insert("fv".into(), from_val);
+        params.insert("tv".into(), to_val);
+        let mut props_clause = String::new();
+        if let Some(props) = v.get("props").filter(|p| !p.is_null()) {
+            let (clause, p) = flatten_props(props, "rp")?;
+            params.extend(p);
+            props_clause = format!(" {clause}");
+        }
+        let cypher = format!(
+            "MATCH (a:{from_label} {{{from_key}: $fv}}), (b:{to_label} {{{to_key}: $tv}}) \
+             CREATE (a)-[r:{rel_type}{props_clause}]->(b) RETURN r"
+        );
+        let rows = with_graph(&v, |g| async move {
+            run_query(&g, &cypher, &Value::Object(params)).await
+        })?;
+        Ok(json!({ "relationship": rows.into_iter().next() }))
+    })
+}
+
+/// DETACH DELETE nodes of a label, optionally narrowed by a scalar-property
+/// match. Returns `{ ok }`.
+#[no_mangle]
+pub extern "C" fn neo4j__delete_nodes(args: *const c_char) -> *const c_char {
+    ffi_call(args, |v| {
+        let label = quote_ident(
+            v["label"]
+                .as_str()
+                .ok_or_else(|| anyhow!("missing label"))?,
+        );
+        let (clause, params) = match v.get("match").filter(|m| !m.is_null()) {
+            Some(m) => flatten_props(m, "mp")?,
+            None => (String::new(), Map::new()),
+        };
+        let cypher = format!("MATCH (n:{label} {clause}) DETACH DELETE n");
+        with_graph(&v, |g| async move {
+            g.run(build_query(&cypher, &Value::Object(params)))
+                .await
+                .map_err(|e| anyhow!("delete: {e}"))
+        })?;
+        Ok(json!({ "ok": true }))
+    })
+}
+
+/// Count nodes, optionally of a single label.
+#[no_mangle]
+pub extern "C" fn neo4j__node_count(args: *const c_char) -> *const c_char {
+    ffi_call(args, |v| {
+        let pattern = match v.get("label").and_then(|x| x.as_str()) {
+            Some(l) => format!("(n:{})", quote_ident(l)),
+            None => "(n)".to_string(),
+        };
+        let cypher = format!("MATCH {pattern} RETURN count(n) AS count");
+        let rows = with_graph(
+            &v,
+            |g| async move { run_query(&g, &cypher, &Value::Null).await },
+        )?;
+        let count = rows
+            .first()
+            .and_then(|r| r.get("count"))
+            .cloned()
+            .unwrap_or(json!(0));
+        Ok(json!({ "value": count }))
+    })
+}
+
+// ── index / constraint management ───────────────────────────────────────────
+
+#[no_mangle]
+pub extern "C" fn neo4j__create_index(args: *const c_char) -> *const c_char {
+    ffi_call(args, |v| {
+        let label = quote_ident(
+            v["label"]
+                .as_str()
+                .ok_or_else(|| anyhow!("missing label"))?,
+        );
+        let property = quote_ident(
+            v["property"]
+                .as_str()
+                .ok_or_else(|| anyhow!("missing property"))?,
+        );
+        let name = v
+            .get("name")
+            .and_then(|x| x.as_str())
+            .map(quote_ident)
+            .unwrap_or_default();
+        let cypher = format!("CREATE INDEX {name} IF NOT EXISTS FOR (n:{label}) ON (n.{property})");
+        with_graph(&v, |g| async move {
+            g.run(query(&cypher))
+                .await
+                .map_err(|e| anyhow!("create index: {e}"))
+        })?;
+        Ok(json!({ "ok": true }))
+    })
+}
+
+#[no_mangle]
+pub extern "C" fn neo4j__create_constraint(args: *const c_char) -> *const c_char {
+    ffi_call(args, |v| {
+        let label = quote_ident(
+            v["label"]
+                .as_str()
+                .ok_or_else(|| anyhow!("missing label"))?,
+        );
+        let property = quote_ident(
+            v["property"]
+                .as_str()
+                .ok_or_else(|| anyhow!("missing property"))?,
+        );
+        let name = v
+            .get("name")
+            .and_then(|x| x.as_str())
+            .map(quote_ident)
+            .unwrap_or_default();
+        // default is a uniqueness constraint
+        let cypher = format!(
+            "CREATE CONSTRAINT {name} IF NOT EXISTS FOR (n:{label}) REQUIRE n.{property} IS UNIQUE"
+        );
+        with_graph(&v, |g| async move {
+            g.run(query(&cypher))
+                .await
+                .map_err(|e| anyhow!("create constraint: {e}"))
+        })?;
+        Ok(json!({ "ok": true }))
+    })
+}
+
+#[no_mangle]
+pub extern "C" fn neo4j__drop_index(args: *const c_char) -> *const c_char {
+    ffi_call(args, |v| {
+        let name = quote_ident(v["name"].as_str().ok_or_else(|| anyhow!("missing name"))?);
+        let cypher = format!("DROP INDEX {name} IF EXISTS");
+        with_graph(&v, |g| async move {
+            g.run(query(&cypher))
+                .await
+                .map_err(|e| anyhow!("drop index: {e}"))
+        })?;
+        Ok(json!({ "ok": true }))
+    })
+}
+
+#[no_mangle]
+pub extern "C" fn neo4j__drop_constraint(args: *const c_char) -> *const c_char {
+    ffi_call(args, |v| {
+        let name = quote_ident(v["name"].as_str().ok_or_else(|| anyhow!("missing name"))?);
+        let cypher = format!("DROP CONSTRAINT {name} IF EXISTS");
+        with_graph(&v, |g| async move {
+            g.run(query(&cypher))
+                .await
+                .map_err(|e| anyhow!("drop constraint: {e}"))
+        })?;
+        Ok(json!({ "ok": true }))
+    })
+}
+
+// ── query planning ──────────────────────────────────────────────────────────
+
+#[no_mangle]
+pub extern "C" fn neo4j__explain(args: *const c_char) -> *const c_char {
+    ffi_call(args, |v| {
+        let cypher = format!(
+            "EXPLAIN {}",
+            v["cypher"]
+                .as_str()
+                .ok_or_else(|| anyhow!("missing cypher"))?
+        );
+        let params = params_of(&v);
+        let rows = with_graph(&v, |g| async move { run_query(&g, &cypher, &params).await })?;
+        Ok(json!({ "rows": rows }))
+    })
+}
+
+#[no_mangle]
+pub extern "C" fn neo4j__profile(args: *const c_char) -> *const c_char {
+    ffi_call(args, |v| {
+        let cypher = format!(
+            "PROFILE {}",
+            v["cypher"]
+                .as_str()
+                .ok_or_else(|| anyhow!("missing cypher"))?
+        );
+        let params = params_of(&v);
+        let rows = with_graph(&v, |g| async move { run_query(&g, &cypher, &params).await })?;
+        Ok(json!({ "rows": rows }))
+    })
+}
+
 // ── pure URL helpers ────────────────────────────────────────────────────────
 
 #[no_mangle]
@@ -406,6 +741,40 @@ fn redact_bolt(url: &str) -> String {
     }
 }
 
+/// Backtick-quote a Cypher identifier (label / relationship type / property /
+/// index name), escaping internal backticks. Labels and types cannot be
+/// parametrized in Cypher, so the convenience helpers interpolate them — this
+/// keeps that safe against injection.
+fn quote_ident(s: &str) -> String {
+    format!("`{}`", s.replace('`', "``"))
+}
+
+fn scalar_or_err(v: &Value, what: &str) -> Result<()> {
+    if v.is_object() || v.is_array() {
+        bail!("{what} must be a scalar (string / number / bool / null)");
+    }
+    Ok(())
+}
+
+/// Flatten a JSON object of scalar properties into a Cypher property-map clause
+/// `{`k`: $p0, …}` plus the named scalar params (`<prefix>0`, `<prefix>1`, …).
+/// Errors on a non-scalar value — Neo4j property values are scalars or lists of
+/// scalars; for lists/maps use `run` with hand-written Cypher.
+fn flatten_props(props: &Value, prefix: &str) -> Result<(String, Map<String, Value>)> {
+    let obj = props
+        .as_object()
+        .ok_or_else(|| anyhow!("props must be an object"))?;
+    let mut clauses = Vec::with_capacity(obj.len());
+    let mut params = Map::new();
+    for (i, (k, val)) in obj.iter().enumerate() {
+        scalar_or_err(val, &format!("property {k:?}"))?;
+        let pname = format!("{prefix}{i}");
+        clauses.push(format!("{}: ${}", quote_ident(k), pname));
+        params.insert(pname, val.clone());
+    }
+    Ok((format!("{{{}}}", clauses.join(", ")), params))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -452,5 +821,42 @@ mod tests {
         let v = json!({"cypher": "X", "params": {"id": 5}});
         assert_eq!(params_of(&v), json!({"id": 5}));
         assert_eq!(params_of(&json!({"cypher": "X"})), Value::Null);
+    }
+
+    #[test]
+    fn quote_ident_escapes_backticks() {
+        assert_eq!(quote_ident("Person"), "`Person`");
+        assert_eq!(quote_ident("weird`label"), "`weird``label`");
+        // an injection attempt stays inside the backtick quoting
+        assert_eq!(
+            quote_ident("P) DETACH DELETE n //"),
+            "`P) DETACH DELETE n //`"
+        );
+    }
+
+    #[test]
+    fn flatten_props_builds_clause_and_params() {
+        let (clause, params) = flatten_props(&json!({"name": "Ada", "age": 36}), "np").unwrap();
+        assert!(clause.starts_with('{') && clause.ends_with('}'));
+        assert!(clause.contains("`name`: $np0"));
+        assert!(clause.contains("`age`: $np1"));
+        assert_eq!(params["np0"], json!("Ada"));
+        assert_eq!(params["np1"], json!(36));
+    }
+
+    #[test]
+    fn flatten_props_rejects_nested() {
+        assert!(flatten_props(&json!({"k": {"nested": 1}}), "np").is_err());
+        assert!(flatten_props(&json!({"k": [1, 2]}), "np").is_err());
+        assert!(flatten_props(&json!([]), "np").is_err());
+    }
+
+    #[test]
+    fn scalar_or_err_accepts_scalars_only() {
+        assert!(scalar_or_err(&json!("x"), "v").is_ok());
+        assert!(scalar_or_err(&json!(1), "v").is_ok());
+        assert!(scalar_or_err(&json!(null), "v").is_ok());
+        assert!(scalar_or_err(&json!({"a": 1}), "v").is_err());
+        assert!(scalar_or_err(&json!([1]), "v").is_err());
     }
 }
