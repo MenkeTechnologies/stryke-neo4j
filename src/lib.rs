@@ -691,6 +691,71 @@ pub extern "C" fn neo4j__redact_url(args: *const c_char) -> *const c_char {
     })
 }
 
+/// Backtick-quote a Cypher identifier (label / type / property / index name).
+#[no_mangle]
+pub extern "C" fn neo4j__quote_identifier(args: *const c_char) -> *const c_char {
+    ffi_call(args, |v| {
+        let s = v["value"]
+            .as_str()
+            .ok_or_else(|| anyhow!("missing value"))?;
+        Ok(json!({ "value": quote_ident(s) }))
+    })
+}
+
+/// Escape a string for a single-quoted Cypher string literal.
+#[no_mangle]
+pub extern "C" fn neo4j__escape_string(args: *const c_char) -> *const c_char {
+    ffi_call(args, |v| {
+        let s = v["value"]
+            .as_str()
+            .ok_or_else(|| anyhow!("missing value"))?;
+        Ok(json!({ "value": escape_string(s) }))
+    })
+}
+
+/// Wrap a string as a single-quoted Cypher string literal.
+#[no_mangle]
+pub extern "C" fn neo4j__quote_literal(args: *const c_char) -> *const c_char {
+    ffi_call(args, |v| {
+        let s = v["value"]
+            .as_str()
+            .ok_or_else(|| anyhow!("missing value"))?;
+        Ok(json!({ "value": quote_literal(s) }))
+    })
+}
+
+/// Format a JSON value as a Cypher literal (string/number/bool/null/list/map).
+#[no_mangle]
+pub extern "C" fn neo4j__format_value(args: *const c_char) -> *const c_char {
+    ffi_call(args, |v| {
+        let val = v.get("value").ok_or_else(|| anyhow!("missing value"))?;
+        Ok(json!({ "value": format_value(val) }))
+    })
+}
+
+/// True when a string is a valid unquoted Cypher identifier.
+#[no_mangle]
+pub extern "C" fn neo4j__valid_identifier(args: *const c_char) -> *const c_char {
+    ffi_call(args, |v| {
+        let s = v["value"]
+            .as_str()
+            .ok_or_else(|| anyhow!("missing value"))?;
+        Ok(json!({ "valid": valid_identifier(s) }))
+    })
+}
+
+/// Build a Bolt URI from a components map (inverse of parse_url).
+#[no_mangle]
+pub extern "C" fn neo4j__build_url(args: *const c_char) -> *const c_char {
+    ffi_call(args, |v| {
+        let parts = v
+            .get("parts")
+            .and_then(|x| x.as_object())
+            .ok_or_else(|| anyhow!("missing parts object"))?;
+        Ok(json!({ "value": build_bolt(parts) }))
+    })
+}
+
 // ── pure logic (unit-tested) ────────────────────────────────────────────────
 
 /// Decompose a Bolt URI (`neo4j[+s]://user:pass@host:7687`) into parts.
@@ -747,6 +812,71 @@ fn redact_bolt(url: &str) -> String {
 /// keeps that safe against injection.
 fn quote_ident(s: &str) -> String {
     format!("`{}`", s.replace('`', "``"))
+}
+
+/// Escape a string for a single-quoted Cypher string literal (`\` and `'`).
+fn escape_string(s: &str) -> String {
+    s.replace('\\', "\\\\").replace('\'', "\\'")
+}
+
+/// Wrap a string as a single-quoted Cypher string literal.
+fn quote_literal(s: &str) -> String {
+    format!("'{}'", escape_string(s))
+}
+
+/// Format a JSON value as a Cypher literal: string→`'...'`, number→as-is,
+/// bool→`true`/`false`, null→`null`, array→`[...]`, object→`{`k`: v}`.
+fn format_value(v: &Value) -> String {
+    match v {
+        Value::Null => "null".to_string(),
+        Value::Bool(b) => b.to_string(),
+        Value::Number(n) => n.to_string(),
+        Value::String(s) => quote_literal(s),
+        Value::Array(a) => format!(
+            "[{}]",
+            a.iter().map(format_value).collect::<Vec<_>>().join(", ")
+        ),
+        Value::Object(o) => {
+            let inner = o
+                .iter()
+                .map(|(k, val)| format!("{}: {}", quote_ident(k), format_value(val)))
+                .collect::<Vec<_>>()
+                .join(", ");
+            format!("{{{inner}}}")
+        }
+    }
+}
+
+/// A Cypher identifier is safe unquoted when it matches `[A-Za-z_][A-Za-z0-9_]*`.
+fn valid_identifier(s: &str) -> bool {
+    let mut chars = s.chars();
+    matches!(chars.next(), Some(c) if c.is_ascii_alphabetic() || c == '_')
+        && chars.all(|c| c.is_ascii_alphanumeric() || c == '_')
+}
+
+/// Build a Bolt URI from a components map (inverse of `parse_bolt`): keys
+/// `scheme` (default `neo4j`), `host` (default `localhost`), `port`, `username`,
+/// `password`.
+fn build_bolt(v: &Map<String, Value>) -> String {
+    let scheme = v.get("scheme").and_then(|x| x.as_str()).unwrap_or("neo4j");
+    let host = v
+        .get("host")
+        .and_then(|x| x.as_str())
+        .unwrap_or("localhost");
+    let mut out = format!("{scheme}://");
+    if let Some(user) = v.get("username").and_then(|x| x.as_str()) {
+        out.push_str(user);
+        if let Some(pass) = v.get("password").and_then(|x| x.as_str()) {
+            out.push(':');
+            out.push_str(pass);
+        }
+        out.push('@');
+    }
+    out.push_str(host);
+    if let Some(port) = v.get("port").and_then(|x| x.as_u64()) {
+        out.push_str(&format!(":{port}"));
+    }
+    out
 }
 
 fn scalar_or_err(v: &Value, what: &str) -> Result<()> {
@@ -858,5 +988,43 @@ mod tests {
         assert!(scalar_or_err(&json!(null), "v").is_ok());
         assert!(scalar_or_err(&json!({"a": 1}), "v").is_err());
         assert!(scalar_or_err(&json!([1]), "v").is_err());
+    }
+
+    #[test]
+    fn escape_and_quote_literal() {
+        assert_eq!(escape_string("a'b"), "a\\'b");
+        assert_eq!(escape_string("c\\d"), "c\\\\d");
+        assert_eq!(quote_literal("O'Brien"), "'O\\'Brien'");
+    }
+
+    #[test]
+    fn format_value_cypher() {
+        assert_eq!(format_value(&json!(7)), "7");
+        assert_eq!(format_value(&json!(true)), "true");
+        assert_eq!(format_value(&Value::Null), "null");
+        assert_eq!(format_value(&json!("x")), "'x'");
+        assert_eq!(format_value(&json!([1, 2])), "[1, 2]");
+        assert_eq!(format_value(&json!({"a": 1})), "{`a`: 1}");
+    }
+
+    #[test]
+    fn valid_identifier_rules() {
+        assert!(valid_identifier("n1"));
+        assert!(valid_identifier("_x"));
+        assert!(!valid_identifier("1n"));
+        assert!(!valid_identifier("a-b"));
+    }
+
+    #[test]
+    fn build_bolt_roundtrips() {
+        let parts = json!({"scheme": "neo4j", "host": "db", "port": 7687, "username": "neo4j", "password": "pw"});
+        assert_eq!(
+            build_bolt(parts.as_object().unwrap()),
+            "neo4j://neo4j:pw@db:7687"
+        );
+        assert_eq!(
+            build_bolt(json!({"host": "h"}).as_object().unwrap()),
+            "neo4j://h"
+        );
     }
 }

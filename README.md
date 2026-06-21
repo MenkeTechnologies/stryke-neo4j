@@ -121,7 +121,8 @@ whose call errors is evicted and reopened on the next call.
 | Schema        | `create_index`, `create_constraint`, `drop_index`, `drop_constraint`   |
 | Introspection | `labels`, `relationship_types`, `property_keys`, `indexes`, `constraints` |
 | Planning      | `explain`, `profile`                                                   |
-| URL helpers   | `parse_url`, `redact_url`                                              |
+| Cypher helpers| `escape`, `quote_literal`, `quote_ident`, `valid_identifier`, `format_value` |
+| URL helpers   | `parse_url`, `redact_url`, `build_url`                                 |
 
 The graph/schema convenience helpers take scalar properties and safely
 backtick-quote labels, relationship types, and property names (which Cypher

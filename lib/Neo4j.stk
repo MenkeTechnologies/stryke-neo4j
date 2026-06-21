@@ -224,3 +224,33 @@ fn Neo4j::parse_url ($url) {
 fn Neo4j::redact_url ($url) {
     Neo4j::_decode("redact_url", neo4j__redact_url(to_json({ url => $url })))->{value}
 }
+
+## Backtick-quote $value as a Cypher identifier (label / type / property).
+fn Neo4j::quote_ident ($value) {
+    Neo4j::_decode("quote_identifier", neo4j__quote_identifier(to_json({ value => $value })))->{value}
+}
+
+## Escape $value for a single-quoted Cypher string literal (`\` and `'`).
+fn Neo4j::escape ($value) {
+    Neo4j::_decode("escape_string", neo4j__escape_string(to_json({ value => $value })))->{value}
+}
+
+## Wrap $value as a single-quoted Cypher string literal.
+fn Neo4j::quote_literal ($value) {
+    Neo4j::_decode("quote_literal", neo4j__quote_literal(to_json({ value => $value })))->{value}
+}
+
+## Format a $value as a Cypher literal (string/number/bool/null/list/map).
+fn Neo4j::format_value ($value) {
+    Neo4j::_decode("format_value", neo4j__format_value(to_json({ value => $value })))->{value}
+}
+
+## True when $value is a valid unquoted Cypher identifier.
+fn Neo4j::valid_identifier ($value) {
+    Neo4j::_decode("valid_identifier", neo4j__valid_identifier(to_json({ value => $value })))->{valid}
+}
+
+## Build a Bolt URI from a $parts hashref (inverse of parse_url).
+fn Neo4j::build_url ($parts) {
+    Neo4j::_decode("build_url", neo4j__build_url(to_json({ parts => $parts })))->{value}
+}
