@@ -161,6 +161,34 @@ fn Neo4j::create_rel (%opts) {
     Neo4j::_decode("create_rel", neo4j__create_rel(to_json($r)))->{relationship}
 }
 
+## MERGE a typed relationship (idempotent) between two matched nodes. Same
+## %opts as create_rel; props are applied via `SET r += {...}`. Returns the rel.
+fn Neo4j::merge_rel (%opts) {
+    val $r = Neo4j::_req(
+        {
+            from_label => $opts{from_label}, from_key => $opts{from_key}, from_value => $opts{from_value},
+            to_label   => $opts{to_label},   to_key   => $opts{to_key},   to_value   => $opts{to_value},
+            type       => $opts{type},       props    => $opts{props},
+        },
+        \%opts,
+    )
+    Neo4j::_decode("merge_rel", neo4j__merge_rel(to_json($r)))->{relationship}
+}
+
+## DELETE a typed relationship between two matched nodes. Same %opts as
+## create_rel (minus props). Returns the count removed.
+fn Neo4j::delete_rel (%opts) {
+    val $r = Neo4j::_req(
+        {
+            from_label => $opts{from_label}, from_key => $opts{from_key}, from_value => $opts{from_value},
+            to_label   => $opts{to_label},   to_key   => $opts{to_key},   to_value   => $opts{to_value},
+            type       => $opts{type},
+        },
+        \%opts,
+    )
+    Neo4j::_decode("delete_rel", neo4j__delete_rel(to_json($r)))->{deleted}
+}
+
 ## DETACH DELETE nodes of $label, optionally narrowed by %opts{match} props.
 fn Neo4j::delete_nodes ($label, %opts) {
     val $r = Neo4j::_req({ label => $label, match => $opts{match} }, \%opts)

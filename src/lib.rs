@@ -506,6 +506,117 @@ pub extern "C" fn neo4j__create_rel(args: *const c_char) -> *const c_char {
     })
 }
 
+/// MATCH two nodes by `(label, key, value)` each and MERGE a typed relationship
+/// between them (idempotent — created once, reused after), optionally SETting
+/// scalar properties. Returns the relationship.
+#[no_mangle]
+pub extern "C" fn neo4j__merge_rel(args: *const c_char) -> *const c_char {
+    ffi_call(args, |v| {
+        let from_label = quote_ident(
+            v["from_label"]
+                .as_str()
+                .ok_or_else(|| anyhow!("missing from_label"))?,
+        );
+        let from_key = quote_ident(
+            v["from_key"]
+                .as_str()
+                .ok_or_else(|| anyhow!("missing from_key"))?,
+        );
+        let to_label = quote_ident(
+            v["to_label"]
+                .as_str()
+                .ok_or_else(|| anyhow!("missing to_label"))?,
+        );
+        let to_key = quote_ident(
+            v["to_key"]
+                .as_str()
+                .ok_or_else(|| anyhow!("missing to_key"))?,
+        );
+        let rel_type = quote_ident(v["type"].as_str().ok_or_else(|| anyhow!("missing type"))?);
+        let from_val = v
+            .get("from_value")
+            .cloned()
+            .ok_or_else(|| anyhow!("missing from_value"))?;
+        let to_val = v
+            .get("to_value")
+            .cloned()
+            .ok_or_else(|| anyhow!("missing to_value"))?;
+        scalar_or_err(&from_val, "from_value")?;
+        scalar_or_err(&to_val, "to_value")?;
+        let mut params = Map::new();
+        params.insert("fv".into(), from_val);
+        params.insert("tv".into(), to_val);
+        let mut set_clause = String::new();
+        if let Some(props) = v.get("props").filter(|p| !p.is_null()) {
+            let (clause, p) = flatten_props(props, "rp")?;
+            params.extend(p);
+            set_clause = format!(" SET r += {clause}");
+        }
+        let cypher = format!(
+            "MATCH (a:{from_label} {{{from_key}: $fv}}), (b:{to_label} {{{to_key}: $tv}}) \
+             MERGE (a)-[r:{rel_type}]->(b){set_clause} RETURN r"
+        );
+        let rows = with_graph(&v, |g| async move {
+            run_query(&g, &cypher, &Value::Object(params)).await
+        })?;
+        Ok(json!({ "relationship": rows.into_iter().next() }))
+    })
+}
+
+/// MATCH a typed relationship between two nodes (by `(label, key, value)` each)
+/// and DELETE it. Returns `{ ok, deleted }` with the count removed.
+#[no_mangle]
+pub extern "C" fn neo4j__delete_rel(args: *const c_char) -> *const c_char {
+    ffi_call(args, |v| {
+        let from_label = quote_ident(
+            v["from_label"]
+                .as_str()
+                .ok_or_else(|| anyhow!("missing from_label"))?,
+        );
+        let from_key = quote_ident(
+            v["from_key"]
+                .as_str()
+                .ok_or_else(|| anyhow!("missing from_key"))?,
+        );
+        let to_label = quote_ident(
+            v["to_label"]
+                .as_str()
+                .ok_or_else(|| anyhow!("missing to_label"))?,
+        );
+        let to_key = quote_ident(
+            v["to_key"]
+                .as_str()
+                .ok_or_else(|| anyhow!("missing to_key"))?,
+        );
+        let rel_type = quote_ident(v["type"].as_str().ok_or_else(|| anyhow!("missing type"))?);
+        let from_val = v
+            .get("from_value")
+            .cloned()
+            .ok_or_else(|| anyhow!("missing from_value"))?;
+        let to_val = v
+            .get("to_value")
+            .cloned()
+            .ok_or_else(|| anyhow!("missing to_value"))?;
+        scalar_or_err(&from_val, "from_value")?;
+        scalar_or_err(&to_val, "to_value")?;
+        let mut params = Map::new();
+        params.insert("fv".into(), from_val);
+        params.insert("tv".into(), to_val);
+        let cypher = format!(
+            "MATCH (a:{from_label} {{{from_key}: $fv}})-[r:{rel_type}]->(b:{to_label} {{{to_key}: $tv}}) \
+             DELETE r RETURN count(r) AS deleted"
+        );
+        let rows = with_graph(&v, |g| async move {
+            run_query(&g, &cypher, &Value::Object(params)).await
+        })?;
+        let deleted = rows
+            .first()
+            .and_then(|r| r.get("deleted").cloned())
+            .unwrap_or(json!(0));
+        Ok(json!({ "ok": true, "deleted": deleted }))
+    })
+}
+
 /// DETACH DELETE nodes of a label, optionally narrowed by a scalar-property
 /// match. Returns `{ ok }`.
 #[no_mangle]

@@ -117,7 +117,7 @@ whose call errors is evicted and reopened on the next call.
 | Liveness      | `version`, `ping`, `server_info`                                       |
 | Query         | `query`, `query_one`, `scalar`, `query_values`                         |
 | Write         | `run`, `batch` (transaction)                                           |
-| Graph helpers | `create_node`, `merge_node`, `create_rel`, `delete_nodes`, `node_count` |
+| Graph helpers | `create_node`, `merge_node`, `create_rel`, `merge_rel`, `delete_rel`, `delete_nodes`, `node_count` |
 | Schema        | `create_index`, `create_constraint`, `drop_index`, `drop_constraint`   |
 | Introspection | `labels`, `relationship_types`, `property_keys`, `indexes`, `constraints` |
 | Planning      | `explain`, `profile`                                                   |
