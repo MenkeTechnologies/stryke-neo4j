@@ -47,6 +47,14 @@ exports = [
     "neo4j__format_value",
     "neo4j__valid_identifier",
     "neo4j__build_url",
+    "neo4j__count_property_values",
+    "neo4j__databases",
+    "neo4j__degree",
+    "neo4j__delete_node",
+    "neo4j__exists_node",
+    "neo4j__get_node",
+    "neo4j__query_column",
+    "neo4j__relationship_count",
 ]
 
 [scripts]
