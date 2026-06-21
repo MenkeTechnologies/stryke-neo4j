@@ -45,8 +45,38 @@ if (defined $ENV{NEO4J_URL}) {
         val @labels = Neo4j::labels(%conn)
         assert_ok scalar(@labels) > 0, "labels() returns rows"
 
+        # 6. point lookups + existence by (label, key, value)
+        val $node = Neo4j::get_node($tag, "id", 1, %conn)
+        assert_eq $node->{name}, "Ada", "get_node returns the matched node"
+        assert_eq Neo4j::exists_node($tag, "id", 1, %conn), \1, "exists_node true for present node"
+        assert_eq Neo4j::exists_node($tag, "id", 999, %conn), \0, "exists_node false for absent node"
+
+        # 7. relationship + degree (Alan KNOWS Ada)
+        Neo4j::create_rel(
+            from_label => $tag, from_key => "id", from_value => 2,
+            to_label   => $tag, to_key   => "id", to_value   => 1,
+            type       => "KNOWS",
+            %conn,
+        )
+        assert_ok Neo4j::relationship_count(type => "KNOWS", %conn) >= 1, "relationship_count counts KNOWS"
+        assert_eq Neo4j::degree($tag, "id", 2, direction => "out", type => "KNOWS", %conn), 1, "degree out KNOWS is 1"
+        assert_eq Neo4j::degree($tag, "id", 1, direction => "in", type => "KNOWS", %conn), 1, "degree in KNOWS is 1"
+
+        # 8. query_column plucks a named column
+        val @names = Neo4j::query_column("MATCH (p:$tag) RETURN p.name AS nm ORDER BY nm", "nm", %conn)
+        assert_eq scalar(@names), 2, "query_column returns two values"
+        assert_eq $names[0], "Ada", "query_column first value"
+
+        # 9. count_property_values groups by a property
+        val @dist = Neo4j::count_property_values($tag, "name", %conn)
+        assert_eq scalar(@dist), 2, "count_property_values returns two groups"
+
+        # 10. point delete
+        assert_eq Neo4j::delete_node($tag, "id", 1, %conn), 1, "delete_node removes one node"
+        assert_eq Neo4j::exists_node($tag, "id", 1, %conn), \0, "node gone after delete_node"
+
         # cleanup
-        Neo4j::run("MATCH (p:$tag) DELETE p", %conn)
+        Neo4j::run("MATCH (p:$tag) DETACH DELETE p", %conn)
     }
 }
 

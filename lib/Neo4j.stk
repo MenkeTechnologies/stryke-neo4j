@@ -115,6 +115,13 @@ fn Neo4j::constraints (%opts) {
     @{ Neo4j::_decode("constraints", neo4j__constraints(to_json($r)))->{rows} }
 }
 
+## Available databases (`SHOW DATABASES`) — name/role/access/status rows.
+## Needs a server that supports multi-database administration.
+fn Neo4j::databases (%opts) {
+    val $r = Neo4j::_req({}, \%opts)
+    @{ Neo4j::_decode("databases", neo4j__databases(to_json($r)))->{rows} }
+}
+
 # ── transactions ──────────────────────────────────────────────────────
 
 ## Run a list of steps in one transaction (commit on success, rollback if any
@@ -130,6 +137,13 @@ fn Neo4j::batch ($steps, %opts) {
 fn Neo4j::query_values ($cypher, %opts) {
     val $r = Neo4j::_req({ cypher => $cypher, params => $opts{params} }, \%opts)
     @{ Neo4j::_decode("query_values", neo4j__query_values(to_json($r)))->{values} }
+}
+
+## Like query, but pluck a single named $column across all rows into a flat
+## list. Generalizes query_values (first column) to any RETURN alias.
+fn Neo4j::query_column ($cypher, $column, %opts) {
+    val $r = Neo4j::_req({ cypher => $cypher, column => $column, params => $opts{params} }, \%opts)
+    @{ Neo4j::_decode("query_column", neo4j__query_column(to_json($r)))->{values} }
 }
 
 # ── node / relationship convenience (scalar properties) ───────────────
@@ -202,10 +216,53 @@ fn Neo4j::delete_nodes ($label, %opts) {
     Neo4j::_decode("delete_nodes", neo4j__delete_nodes(to_json($r)))->{ok}
 }
 
+## MATCH a single $label node on $key = $value and DETACH DELETE it. Returns
+## the count removed (0 if no match) — the point counterpart to delete_nodes.
+fn Neo4j::delete_node ($label, $key, $value, %opts) {
+    val $r = Neo4j::_req({ label => $label, key => $key, value => $value }, \%opts)
+    Neo4j::_decode("delete_node", neo4j__delete_node(to_json($r)))->{deleted}
+}
+
+## MATCH a single $label node on $key = $value and return it (or undef). The
+## read-only point lookup counterpart to merge_node / set_props.
+fn Neo4j::get_node ($label, $key, $value, %opts) {
+    val $r = Neo4j::_req({ label => $label, key => $key, value => $value }, \%opts)
+    Neo4j::_decode("get_node", neo4j__get_node(to_json($r)))->{node}
+}
+
+## True when at least one $label node has $key = $value.
+fn Neo4j::exists_node ($label, $key, $value, %opts) {
+    val $r = Neo4j::_req({ label => $label, key => $key, value => $value }, \%opts)
+    Neo4j::_decode("exists_node", neo4j__exists_node(to_json($r)))->{value}
+}
+
+## Relationship degree of the $label node on $key = $value. %opts{direction} is
+## "out" / "in" / "both" (default "both"); %opts{type} narrows to one rel type.
+fn Neo4j::degree ($label, $key, $value, %opts) {
+    val $r = Neo4j::_req(
+        { label => $label, key => $key, value => $value, direction => $opts{direction}, type => $opts{type} },
+        \%opts,
+    )
+    Neo4j::_decode("degree", neo4j__degree(to_json($r)))->{value}
+}
+
 ## Count nodes, optionally of a single %opts{label}.
 fn Neo4j::node_count (%opts) {
     val $r = Neo4j::_req({ label => $opts{label} }, \%opts)
     Neo4j::_decode("node_count", neo4j__node_count(to_json($r)))->{value}
+}
+
+## Count relationships, optionally of a single %opts{type}.
+fn Neo4j::relationship_count (%opts) {
+    val $r = Neo4j::_req({ type => $opts{type} }, \%opts)
+    Neo4j::_decode("relationship_count", neo4j__relationship_count(to_json($r)))->{value}
+}
+
+## Group-by count of $property's distinct values for $label: rows of
+## { value, count } ordered by descending count.
+fn Neo4j::count_property_values ($label, $property, %opts) {
+    val $r = Neo4j::_req({ label => $label, property => $property }, \%opts)
+    @{ Neo4j::_decode("count_property_values", neo4j__count_property_values(to_json($r)))->{rows} }
 }
 
 # ── index / constraint management ─────────────────────────────────────

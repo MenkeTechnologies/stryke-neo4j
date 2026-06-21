@@ -115,11 +115,11 @@ whose call errors is evicted and reopened on the next call.
 | Group         | Functions                                                              |
 | ------------- | ---------------------------------------------------------------------- |
 | Liveness      | `version`, `ping`, `server_info`                                       |
-| Query         | `query`, `query_one`, `scalar`, `query_values`                         |
+| Query         | `query`, `query_one`, `scalar`, `query_values`, `query_column`         |
 | Write         | `run`, `batch` (transaction)                                           |
-| Graph helpers | `create_node`, `merge_node`, `set_props`, `create_rel`, `merge_rel`, `delete_rel`, `delete_nodes`, `node_count` |
+| Graph helpers | `create_node`, `merge_node`, `set_props`, `get_node`, `exists_node`, `create_rel`, `merge_rel`, `delete_rel`, `delete_node`, `delete_nodes`, `degree`, `node_count`, `relationship_count`, `count_property_values` |
 | Schema        | `create_index`, `create_constraint`, `drop_index`, `drop_constraint`   |
-| Introspection | `labels`, `relationship_types`, `property_keys`, `indexes`, `constraints` |
+| Introspection | `labels`, `relationship_types`, `property_keys`, `indexes`, `constraints`, `databases` |
 | Planning      | `explain`, `profile`                                                   |
 | Cypher helpers| `escape`, `quote_literal`, `quote_ident`, `valid_identifier`, `format_value` |
 | URL helpers   | `parse_url`, `redact_url`, `build_url`                                 |

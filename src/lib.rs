@@ -338,6 +338,14 @@ pub extern "C" fn neo4j__constraints(args: *const c_char) -> *const c_char {
     ffi_call(args, |v| introspect(&v, "SHOW CONSTRAINTS"))
 }
 
+/// Available databases (`SHOW DATABASES`) — name/role/access/status rows.
+/// Requires a server that supports multi-database administration; errors are
+/// surfaced as `{ error }` like every other op.
+#[no_mangle]
+pub extern "C" fn neo4j__databases(args: *const c_char) -> *const c_char {
+    ffi_call(args, |v| introspect(&v, "SHOW DATABASES"))
+}
+
 // ── transactions ────────────────────────────────────────────────────────────
 
 /// Run a list of `{ cypher, params? }` steps inside one transaction. Commits on
@@ -693,6 +701,219 @@ pub extern "C" fn neo4j__node_count(args: *const c_char) -> *const c_char {
             .cloned()
             .unwrap_or(json!(0));
         Ok(json!({ "value": count }))
+    })
+}
+
+/// Count relationships, optionally of a single type. Portable across Neo4j
+/// 4.x/5.x (plain `count(r)`, no `size()`/`COUNT{}` divergence).
+#[no_mangle]
+pub extern "C" fn neo4j__relationship_count(args: *const c_char) -> *const c_char {
+    ffi_call(args, |v| {
+        let pattern = match v.get("type").and_then(|x| x.as_str()) {
+            Some(t) => format!("()-[r:{}]->()", quote_ident(t)),
+            None => "()-[r]->()".to_string(),
+        };
+        let cypher = format!("MATCH {pattern} RETURN count(r) AS count");
+        let rows = with_graph(
+            &v,
+            |g| async move { run_query(&g, &cypher, &Value::Null).await },
+        )?;
+        let count = rows
+            .first()
+            .and_then(|r| r.get("count"))
+            .cloned()
+            .unwrap_or(json!(0));
+        Ok(json!({ "value": count }))
+    })
+}
+
+/// Like `query`, but pluck a single named column across all rows into a flat
+/// list. Generalizes `query_values` (first column) to any RETURN alias.
+#[no_mangle]
+pub extern "C" fn neo4j__query_column(args: *const c_char) -> *const c_char {
+    ffi_call(args, |v| {
+        let cypher = v["cypher"]
+            .as_str()
+            .ok_or_else(|| anyhow!("missing cypher"))?
+            .to_string();
+        let column = v["column"]
+            .as_str()
+            .ok_or_else(|| anyhow!("missing column"))?
+            .to_string();
+        let params = params_of(&v);
+        let rows = with_graph(&v, |g| async move { run_query(&g, &cypher, &params).await })?;
+        let values: Vec<Value> = rows
+            .into_iter()
+            .map(|r| r.get(&column).cloned().unwrap_or(Value::Null))
+            .collect();
+        Ok(json!({ "values": values }))
+    })
+}
+
+/// MATCH a single node by `(label, key, value)` and return it (or null). The
+/// read-only point-lookup counterpart to `merge_node`/`set_props`.
+#[no_mangle]
+pub extern "C" fn neo4j__get_node(args: *const c_char) -> *const c_char {
+    ffi_call(args, |v| {
+        let label = quote_ident(
+            v["label"]
+                .as_str()
+                .ok_or_else(|| anyhow!("missing label"))?,
+        );
+        let key = quote_ident(v["key"].as_str().ok_or_else(|| anyhow!("missing key"))?);
+        let value = v
+            .get("value")
+            .cloned()
+            .ok_or_else(|| anyhow!("missing value"))?;
+        scalar_or_err(&value, "value")?;
+        let mut params = Map::new();
+        params.insert("k".into(), value);
+        let cypher = format!("MATCH (n:{label} {{{key}: $k}}) RETURN n LIMIT 1");
+        let rows = with_graph(&v, |g| async move {
+            run_query(&g, &cypher, &Value::Object(params)).await
+        })?;
+        Ok(json!({ "node": rows.into_iter().next() }))
+    })
+}
+
+/// True when at least one node matches `(label, key, value)`.
+#[no_mangle]
+pub extern "C" fn neo4j__exists_node(args: *const c_char) -> *const c_char {
+    ffi_call(args, |v| {
+        let label = quote_ident(
+            v["label"]
+                .as_str()
+                .ok_or_else(|| anyhow!("missing label"))?,
+        );
+        let key = quote_ident(v["key"].as_str().ok_or_else(|| anyhow!("missing key"))?);
+        let value = v
+            .get("value")
+            .cloned()
+            .ok_or_else(|| anyhow!("missing value"))?;
+        scalar_or_err(&value, "value")?;
+        let mut params = Map::new();
+        params.insert("k".into(), value);
+        let cypher = format!("MATCH (n:{label} {{{key}: $k}}) RETURN count(n) AS c LIMIT 1");
+        let rows = with_graph(&v, |g| async move {
+            run_query(&g, &cypher, &Value::Object(params)).await
+        })?;
+        let exists = rows
+            .first()
+            .and_then(|r| r.get("c"))
+            .and_then(|c| c.as_i64())
+            .map(|n| n > 0)
+            .unwrap_or(false);
+        Ok(json!({ "value": exists }))
+    })
+}
+
+/// Relationship degree of a node matched by `(label, key, value)`. `direction`
+/// is `out` / `in` / `both` (default `both`); `type` optionally narrows to one
+/// relationship type. Uses portable `count(r)` (no `size()`/`COUNT{}`).
+#[no_mangle]
+pub extern "C" fn neo4j__degree(args: *const c_char) -> *const c_char {
+    ffi_call(args, |v| {
+        let label = quote_ident(
+            v["label"]
+                .as_str()
+                .ok_or_else(|| anyhow!("missing label"))?,
+        );
+        let key = quote_ident(v["key"].as_str().ok_or_else(|| anyhow!("missing key"))?);
+        let value = v
+            .get("value")
+            .cloned()
+            .ok_or_else(|| anyhow!("missing value"))?;
+        scalar_or_err(&value, "value")?;
+        let type_clause = match v.get("type").and_then(|x| x.as_str()) {
+            Some(t) => format!(":{}", quote_ident(t)),
+            None => String::new(),
+        };
+        let (left, right) = match v
+            .get("direction")
+            .and_then(|x| x.as_str())
+            .unwrap_or("both")
+        {
+            "out" => ("-", "->"),
+            "in" => ("<-", "-"),
+            _ => ("-", "-"),
+        };
+        let mut params = Map::new();
+        params.insert("k".into(), value);
+        let cypher = format!(
+            "MATCH (n:{label} {{{key}: $k}}) \
+             OPTIONAL MATCH (n){left}[r{type_clause}]{right}() RETURN count(r) AS degree"
+        );
+        let rows = with_graph(&v, |g| async move {
+            run_query(&g, &cypher, &Value::Object(params)).await
+        })?;
+        let degree = rows
+            .first()
+            .and_then(|r| r.get("degree"))
+            .cloned()
+            .unwrap_or(json!(0));
+        Ok(json!({ "value": degree }))
+    })
+}
+
+/// MATCH a single node by `(label, key, value)` and DETACH DELETE it. Returns
+/// `{ ok, deleted }` with the count removed — the point counterpart to
+/// `delete_nodes` (which matches by a property map).
+#[no_mangle]
+pub extern "C" fn neo4j__delete_node(args: *const c_char) -> *const c_char {
+    ffi_call(args, |v| {
+        let label = quote_ident(
+            v["label"]
+                .as_str()
+                .ok_or_else(|| anyhow!("missing label"))?,
+        );
+        let key = quote_ident(v["key"].as_str().ok_or_else(|| anyhow!("missing key"))?);
+        let value = v
+            .get("value")
+            .cloned()
+            .ok_or_else(|| anyhow!("missing value"))?;
+        scalar_or_err(&value, "value")?;
+        let mut params = Map::new();
+        params.insert("k".into(), value);
+        let cypher = format!(
+            "MATCH (n:{label} {{{key}: $k}}) WITH n, count(n) AS deleted \
+             DETACH DELETE n RETURN deleted"
+        );
+        let rows = with_graph(&v, |g| async move {
+            run_query(&g, &cypher, &Value::Object(params)).await
+        })?;
+        let deleted = rows
+            .first()
+            .and_then(|r| r.get("deleted").cloned())
+            .unwrap_or(json!(0));
+        Ok(json!({ "ok": true, "deleted": deleted }))
+    })
+}
+
+/// Group-by count of a property's distinct values for a label: returns rows of
+/// `{ value, count }` ordered by descending count. Useful for quick
+/// distribution/cardinality inspection without hand-written aggregation.
+#[no_mangle]
+pub extern "C" fn neo4j__count_property_values(args: *const c_char) -> *const c_char {
+    ffi_call(args, |v| {
+        let label = quote_ident(
+            v["label"]
+                .as_str()
+                .ok_or_else(|| anyhow!("missing label"))?,
+        );
+        let property = quote_ident(
+            v["property"]
+                .as_str()
+                .ok_or_else(|| anyhow!("missing property"))?,
+        );
+        let cypher = format!(
+            "MATCH (n:{label}) RETURN n.{property} AS value, count(*) AS count \
+             ORDER BY count DESC, value ASC"
+        );
+        let rows = with_graph(
+            &v,
+            |g| async move { run_query(&g, &cypher, &Value::Null).await },
+        )?;
+        Ok(json!({ "rows": rows }))
     })
 }
 
