@@ -1,6 +1,6 @@
 [package]
 name = "stryke-neo4j"
-version = "0.4.0"
+version = "0.5.0"
 description = "Neo4j graph client for stryke. cdylib loaded in-process — Cypher query/run with parameters + schema introspection over the Bolt protocol (neo4rs), blocking facade over an embedded tokio runtime, pool cached per (uri, user, db)."
 authors = ["MenkeTechnologies"]
 license = "MIT"
@@ -27,6 +27,7 @@ exports = [
     "neo4j__query_values",
     "neo4j__create_node",
     "neo4j__merge_node",
+    "neo4j__set_props",
     "neo4j__create_rel",
     "neo4j__merge_rel",
     "neo4j__delete_rel",

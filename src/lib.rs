@@ -450,6 +450,39 @@ pub extern "C" fn neo4j__merge_node(args: *const c_char) -> *const c_char {
     })
 }
 
+/// MATCH a node by `(label, key, value)` and SET its scalar properties
+/// (`n += props`) WITHOUT creating it if absent — the update-only counterpart to
+/// `merge_node`. Returns the updated node, or null if nothing matched.
+#[no_mangle]
+pub extern "C" fn neo4j__set_props(args: *const c_char) -> *const c_char {
+    ffi_call(args, |v| {
+        let label = quote_ident(
+            v["label"]
+                .as_str()
+                .ok_or_else(|| anyhow!("missing label"))?,
+        );
+        let key = quote_ident(v["key"].as_str().ok_or_else(|| anyhow!("missing key"))?);
+        let value = v
+            .get("value")
+            .cloned()
+            .ok_or_else(|| anyhow!("missing value"))?;
+        scalar_or_err(&value, "value")?;
+        let props = v
+            .get("props")
+            .filter(|p| !p.is_null())
+            .ok_or_else(|| anyhow!("missing props"))?;
+        let (clause, p) = flatten_props(props, "np")?;
+        let mut params = Map::new();
+        params.insert("k".into(), value);
+        params.extend(p);
+        let cypher = format!("MATCH (n:{label} {{{key}: $k}}) SET n += {clause} RETURN n");
+        let rows = with_graph(&v, |g| async move {
+            run_query(&g, &cypher, &Value::Object(params)).await
+        })?;
+        Ok(json!({ "node": rows.into_iter().next() }))
+    })
+}
+
 /// MATCH two nodes by `(label, key, value)` each and CREATE a typed relationship
 /// between them with optional scalar properties. Returns the relationship.
 #[no_mangle]
