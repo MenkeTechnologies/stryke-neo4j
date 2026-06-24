@@ -23,6 +23,8 @@ protocol — via `neo4rs`, the pure-Rust driver. Opt-in package tier.
 
 ### [`strykelang`](https://github.com/MenkeTechnologies/strykelang) &middot; [`MenkeTechnologiesMeta`](https://github.com/MenkeTechnologies/MenkeTechnologiesMeta) · [`stryke-postgres`](https://github.com/MenkeTechnologies/stryke-postgres) · [`stryke-mssql`](https://github.com/MenkeTechnologies/stryke-mssql)
 
+### [`Read the Docs`](https://menketechnologies.github.io/stryke-neo4j/) &middot; [`Engineering Report`](https://menketechnologies.github.io/stryke-neo4j/report.html)
+
 ---
 
 ## Table of Contents
