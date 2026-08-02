@@ -8,8 +8,8 @@ help:
 	  'targets:' \
 	  '  make release   - cargo build --release' \
 	  '  make debug     - cargo build' \
-	  '  make test      - cargo test then `s test t/`  (needs $$NEO4J_URL or local 127.0.0.1:587)' \
-	  '  make install   - `s pkg install -g .` (cdylib lands in ~/.stryke/store/search@<ver>/)' \
+	  '  make test      - cargo test then `s test t/`  (needs $$NEO4J_URL or local 127.0.0.1:7687)' \
+	  '  make install   - `s pkg install -g .` (cdylib lands in ~/.stryke/store/neo4j@<ver>/)' \
 	  '  make clean     - cargo clean'
 
 release:
