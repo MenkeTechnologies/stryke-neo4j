@@ -92,7 +92,7 @@ p Neo4j::labels(%conn)    # [ { label => "Person" }, ... ]
 | `password` | —                  |                                                      |
 | `database` | server default     | For multi-database servers                           |
 
-A `neo4rs` `Graph` (connection pool) is cached per `(uri, user, db)`; a pool
+A `neo4rs` `Graph` (connection pool) is cached per `(uri, user, password, db)`; a pool
 whose call errors is evicted and reopened on the next call.
 
 ---
